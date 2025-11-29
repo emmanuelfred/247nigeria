@@ -11,16 +11,19 @@ class User(AbstractUser):
     email_verified = models.BooleanField(default=False)
     phone_number = models.CharField(max_length=15, blank=True, null=True)
     location = models.CharField(max_length=255, blank=True, null=True)
-    cover_photo = models.ImageField(upload_to="cover_photos/", blank=True, null=True,default='cover_photos/default.jpg')
-    profile_photo = models.ImageField(upload_to="profile_photos/", blank=True, null=True)
+    cover_photo = models.URLField(
+        blank=True, 
+        null=True,
+        default='https://247nigeria.s3.eu-north-1.amazonaws.com/cover-photo.jpg'
+    )
+    profile_photo = models.URLField(blank=True, null=True)  # ✅ Add blank=True, null=True
 
     USERNAME_FIELD = "email"  # make email the login field
-    REQUIRED_FIELDS = ["surname", "first_name", "last_name"]  # fields required when creating superuser
-
-
+    REQUIRED_FIELDS = ["surname", "first_name", "last_name"]
+    
 class IdentityVerification(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    id_document = models.FileField(upload_to="ids/")
+    id_document = models.URLField() 
     date_of_birth = models.DateField()
     gender = models.CharField(max_length=10)
     address = models.CharField(max_length=255)

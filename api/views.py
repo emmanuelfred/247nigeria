@@ -17,8 +17,64 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import timedelta
 import random
+from django.core.files.base import ContentFile
 
+from s3_upload.utils import upload_file_to_s3,delete_file_from_s3  # import utility
+# ✅ Add these imports for S3 uploads
+from s3_upload.utils import upload_file_to_s3, delete_file_from_s3
+from django.conf import settings
 
+# ✅ Add these constants
+BUCKET = settings.AWS_STORAGE_BUCKET_NAME
+REGION = settings.AWS_S3_REGION_NAME
+
+from django.core.files.base import ContentFile
+@api_view(['POST'])
+def verify_identity(request, user_id):
+    try:
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({"error": "User not found"}, status=404)
+
+        uploaded = request.FILES.get("id_document")
+        if not uploaded:
+            return Response({"error": "id_document file is required"}, status=400)
+
+        # Create a fresh copy of the file to avoid closed file errors
+        file_bytes = uploaded.read()
+        upload_copy = ContentFile(file_bytes)
+        upload_copy.name = uploaded.name
+
+        # Upload to S3
+        file_url, file_key = upload_file_to_s3(
+            upload_copy,
+            folder="ids",
+            content_type=uploaded.content_type
+        )
+
+        # Clear Django internal files to prevent closed file errors
+        request._files = {}
+
+        # Prepare serializer data
+        data = request.data.copy()
+        data["id_document"] = file_url
+
+        serializer = IdentityVerificationSerializer(data=data)
+
+        if not serializer.is_valid():
+            return Response({"error": "Invalid data", "details": serializer.errors}, status=400)
+
+        # ✅ Use update_or_create directly
+        verification, created = IdentityVerification.objects.update_or_create(
+            user=user,
+            defaults=serializer.validated_data
+        )
+
+        message = "Identity submitted successfully" if created else "Identity updated successfully"
+        return Response({"success": True, "message": message}, status=201)
+
+    except Exception as e:
+        return Response({"error": "Failed to verify identity", "details": str(e)}, status=500)
 @api_view(['POST'])
 def signup(request):
     """
@@ -154,47 +210,6 @@ def resend_verification(request):
 
 
 @api_view(['POST'])
-def verify_identity(request, user_id):
-  
-    try:
-        # Get user
-        user = User.objects.filter(id=user_id).first()
-        
-        if not user:
-            return error_response(
-                message="User not found",
-                code=status.HTTP_404_NOT_FOUND
-            )
-
-        # Validate input
-        serializer = IdentityVerificationSerializer(data=request.data)
-      
-
-        if not serializer.is_valid():
-            return error_response(
-                message="Invalid identity data",
-                code=status.HTTP_400_BAD_REQUEST,
-                details=serializer.errors
-            )
-
-        # Save
-        serializer.save(user=user)
-
-        return Response(
-            {"success": True, "message": "Identity submitted successfully"},
-            status=status.HTTP_201_CREATED
-        )
-
-    except Exception as e:
-        # Catch-all
-        return error_response(
-            message="Failed to verify identity",
-            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            details=str(e)
-        )
-
-
-@api_view(['POST'])
 def login_view(request):
     email = request.data.get("email")
     password = request.data.get("password")
@@ -217,7 +232,7 @@ def login_view(request):
     identity_data = None
     if identity:
         identity_data = {
-            "id_document": identity.id_document.url if identity.id_document else None,
+            "id_document": identity.id_document,  # ✅ Removed .url - it's already a URL string
             "date_of_birth": identity.date_of_birth,
             "gender": identity.gender,
             "address": identity.address,
@@ -234,8 +249,8 @@ def login_view(request):
         "last_name": user.last_name,
         "phone_number": user.phone_number,
         "location": user.location,
-        "cover_photo": user.cover_photo.url if user.cover_photo else None,
-        "profile_photo": user.profile_photo.url if user.profile_photo else None,
+        "cover_photo": user.cover_photo or None,  # ✅ Removed .url
+        "profile_photo": user.profile_photo or None,
         "email_verified": user.email_verified,
         "identity": identity_data,
     }
@@ -246,12 +261,6 @@ def login_view(request):
         "refresh": str(refresh)
     }, status=200)
 
-
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-from accounts.models import User, IdentityVerification
 
 @api_view(["PUT"])
 #@permission_classes([IsAuthenticated])
@@ -281,7 +290,7 @@ def update_profile(request):
     if hasattr(user, "identityverification") and user.identityverification:
         identity = user.identityverification
         identity_data = {
-            "id_document": identity.id_document.url if identity.id_document else None,
+            "id_document": identity.id_document,  # ✅ Removed .url
             "date_of_birth": identity.date_of_birth,
             "gender": identity.gender,
             "address": identity.address,
@@ -297,8 +306,8 @@ def update_profile(request):
         "last_name": user.last_name,
         "phone_number": user.phone_number,
         "location": user.location,
-        "cover_photo": user.cover_photo.url if user.cover_photo else None,
-        "profile_photo": user.profile_photo.url if user.profile_photo else None,
+        "cover_photo": user.cover_photo or None,  # ✅ Removed .url
+        "profile_photo": user.profile_photo or None,
         "email_verified": user.email_verified,
         "identity": identity_data,
     }
@@ -307,8 +316,6 @@ def update_profile(request):
         {"user": user_data, "message": "Profile updated successfully"},
         status=status.HTTP_200_OK
     )
-
-
 
 # 1️⃣ Request OTP
 @api_view(['POST'])
@@ -504,3 +511,180 @@ def update_email(request, user_id):
         {"success": True, "message": "Email updated successfully"},
         status=status.HTTP_200_OK
     )
+    
+    
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def upload_cover_photo(request, user_id):
+    """
+    Upload cover photo to S3
+    - Validates file type and size
+    - Deletes old cover photo from S3 (if not default)
+    - Uploads new cover photo
+    - Updates database
+    """
+    try:
+        # Security check: only allow users to update their own cover photo
+        if request.user.id != int(user_id):
+            return Response(
+                {"error": "You can only update your own cover photo"}, 
+                status=403
+            )
+
+        user = request.user
+
+        if 'cover_photo' not in request.FILES:
+            return Response(
+                {"error": "cover_photo file is required"}, 
+                status=400
+            )
+
+        cover_file = request.FILES['cover_photo']
+
+        # ✅ Validate file type
+        allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+        if cover_file.content_type not in allowed_types:
+            return Response(
+                {"error": "Please select an image file (JPEG, PNG, GIF, or WebP)"}, 
+                status=400
+            )
+
+        # ✅ Validate file size (max 5MB)
+        max_size = 5 * 1024 * 1024  # 5MB in bytes
+        if cover_file.size > max_size:
+            return Response(
+                {"error": "Image size should be less than 5MB"}, 
+                status=400
+            )
+
+        # Delete old cover photo from S3 (only if it's not the default)
+        if user.cover_photo:
+            default_cover = 'https://247nigeria.s3.eu-north-1.amazonaws.com/cover-photo.jpg'
+            
+            # Only delete if it's not the default cover photo
+            if user.cover_photo != default_cover:
+                try:
+                    # Extract the S3 key from the URL
+                    # URL format: https://247nigeria.s3.eu-north-1.amazonaws.com/cover_photos/uuid.jpg
+                    old_key = user.cover_photo.split(f'{BUCKET}.s3.{REGION}.amazonaws.com/')[-1]
+                    delete_file_from_s3(old_key)
+                except Exception as e:
+                    print(f"Failed to delete old cover photo: {e}")
+                    # Continue anyway - don't block upload if deletion fails
+
+        # Upload new cover photo
+        file_bytes = cover_file.read()
+        upload_copy = ContentFile(file_bytes)
+        upload_copy.name = cover_file.name
+
+        cover_url, cover_key = upload_file_to_s3(
+            upload_copy,
+            folder="cover_photos",
+            content_type=cover_file.content_type
+        )
+
+        # Update database
+        user.cover_photo = cover_url
+        user.save()
+
+        # Clear files
+        request._files = {}
+
+        return Response({
+            "success": True,
+            "message": "Cover photo uploaded successfully",
+            "cover_photo": cover_url
+        }, status=200)
+
+    except Exception as e:
+        return Response(
+            {"error": "Failed to upload cover photo", "details": str(e)}, 
+            status=500
+        )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def upload_profile_photo(request, user_id):
+    """
+    Upload profile photo to S3
+    - Validates file type and size
+    - Deletes old profile photo from S3 (if exists)
+    - Uploads new profile photo
+    - Updates database
+    """
+    try:
+        # Security check: only allow users to update their own profile photo
+        if request.user.id != int(user_id):
+            return Response(
+                {"error": "You can only update your own profile photo"}, 
+                status=403
+            )
+
+        user = request.user
+
+        if 'profile_photo' not in request.FILES:
+            return Response(
+                {"error": "profile_photo file is required"}, 
+                status=400
+            )
+
+        profile_file = request.FILES['profile_photo']
+
+        # ✅ Validate file type
+        allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+        if profile_file.content_type not in allowed_types:
+            return Response(
+                {"error": "Please select an image file (JPEG, PNG, GIF, or WebP)"}, 
+                status=400
+            )
+
+        # ✅ Validate file size (max 5MB)
+        max_size = 5 * 1024 * 1024  # 5MB in bytes
+        if profile_file.size > max_size:
+            return Response(
+                {"error": "Image size should be less than 5MB"}, 
+                status=400
+            )
+
+        # Delete old profile photo from S3 (if exists)
+        if user.profile_photo:
+            try:
+                # Extract the S3 key from the URL
+                # URL format: https://247nigeria.s3.eu-north-1.amazonaws.com/profile_photos/uuid.jpg
+                old_key = user.profile_photo.split(f'{BUCKET}.s3.{REGION}.amazonaws.com/')[-1]
+                delete_file_from_s3(old_key)
+            except Exception as e:
+                print(f"Failed to delete old profile photo: {e}")
+                # Continue anyway - don't block upload if deletion fails
+
+        # Upload new profile photo
+        file_bytes = profile_file.read()
+        upload_copy = ContentFile(file_bytes)
+        upload_copy.name = profile_file.name
+
+        profile_url, profile_key = upload_file_to_s3(
+            upload_copy,
+            folder="profile_photos",
+            content_type=profile_file.content_type
+        )
+
+        # Update database
+        user.profile_photo = profile_url
+        user.save()
+
+        # Clear files
+        request._files = {}
+
+        return Response({
+            "success": True,
+            "message": "Profile photo uploaded successfully",
+            "profile_photo": profile_url
+        }, status=200)
+
+    except Exception as e:
+        return Response(
+            {"error": "Failed to upload profile photo", "details": str(e)}, 
+            status=500
+        )

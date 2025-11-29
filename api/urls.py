@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import signup,verify_identity, verify_email, login_view,update_profile,request_password_reset,verify_otp,reset_password ,resend_verification,update_password,update_email
+from .views import upload_cover_photo, upload_profile_photo,signup,verify_identity, verify_email, login_view,update_profile,request_password_reset,verify_otp,reset_password ,resend_verification,update_password,update_email
 
 urlpatterns = [
     path('auth/signup/', signup),
@@ -13,6 +13,9 @@ urlpatterns = [
     path('auth/resend-verification/', resend_verification, name='resend-verification'),
     path("auth/update-password/<int:user_id>/", update_password, name="update-password"),
     path("auth/update-email/<int:user_id>/", update_email, name="update-email"),
+    path('auth/upload-cover-photo/<int:user_id>/', upload_cover_photo, name='upload_cover_photo'),
+    path('auth/upload-profile-photo/<int:user_id>/', upload_profile_photo, name='upload_profile_photo'),
+
 
     
 ]

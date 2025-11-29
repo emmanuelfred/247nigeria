@@ -3,6 +3,12 @@ from accounts.models import User, IdentityVerification
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth import authenticate
 
+class IdentityVerificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IdentityVerification
+        fields = ['id_document', 'date_of_birth', 'gender', 'address']
+        
+        
 class SignupSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
