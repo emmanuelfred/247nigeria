@@ -3,6 +3,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db import transaction
+from django.db.models import Q
 from accounts.models import Job, JobImage, User, JobApplication, IdentityVerification
 from s3_upload.utils import upload_file_to_s3
 from django.conf import settings
@@ -986,3 +987,126 @@ def update_application_status(request, application_id):
         return Response({"message": "Status updated"}, status=200)
     except:
         return Response({"error": "Failed"}, status=400)
+
+
+
+@api_view(['GET'])
+def search_jobs(request):
+    """
+    Search and filter jobs
+    Query params: query, state, city, job_type, category, min_salary, max_salary, experience_years, sort_by
+    """
+    try:
+        # Start with all approved and active jobs
+        jobs = Job.objects.filter(
+            status='approved',
+            is_active=True
+        ).select_related('posted_by').prefetch_related('images')
+
+        # Search by query (job title, company name, or description)
+        query = request.GET.get('query', '').strip()
+        if query:
+            jobs = jobs.filter(
+                Q(job_title__icontains=query) |
+                Q(company_name__icontains=query) |
+                Q(job_description__icontains=query)
+            )
+
+        # Filter by state
+        state = request.GET.get('state', '').strip()
+        if state:
+            jobs = jobs.filter(state__iexact=state)
+
+        # Filter by city
+        city = request.GET.get('city', '').strip()
+        if city:
+            jobs = jobs.filter(city__iexact=city)
+
+        # Filter by job type
+        job_type = request.GET.get('job_type', '').strip()
+        if job_type:
+            jobs = jobs.filter(job_type=job_type)
+
+        # Filter by category
+        category = request.GET.get('category', '').strip()
+        if category:
+            jobs = jobs.filter(category=category)
+
+        # Filter by salary range
+        min_salary = request.GET.get('min_salary', '').strip()
+        if min_salary:
+            jobs = jobs.filter(minimum_salary__gte=float(min_salary))
+
+        max_salary = request.GET.get('max_salary', '').strip()
+        if max_salary:
+            jobs = jobs.filter(maximum_salary__lte=float(max_salary))
+
+        # Filter by experience years (minimum)
+        experience_years = request.GET.get('experience_years', '').strip()
+        if experience_years:
+            jobs = jobs.filter(experience_years__gte=int(experience_years))
+
+        # Sorting
+        sort_by = request.GET.get('sort_by', 'newest').strip()
+        if sort_by == 'salary_asc':
+            jobs = jobs.order_by('minimum_salary')
+        elif sort_by == 'salary_desc':
+            jobs = jobs.order_by('-maximum_salary')
+        elif sort_by == 'popular':
+            jobs = jobs.order_by('-applicant_count')
+        elif sort_by == 'oldest':
+            jobs = jobs.order_by('created_at')
+        else:  # newest (default)
+            jobs = jobs.order_by('-created_at')
+
+        # Prepare response
+        jobs_data = []
+        for job in jobs:
+            thumbnail = job.images.filter(is_thumbnail=True).first()
+            
+            jobs_data.append({
+                'id': job.id,
+                'job_title': job.job_title,
+                'company_name': job.company_name,
+                'category': job.category,
+                'job_type': clean_label(job.job_type),
+                'city': job.city,
+                'state': job.state,
+                'minimum_salary': str(job.minimum_salary),
+                'maximum_salary': str(job.maximum_salary),
+                'salary_period': clean_label(job.salary_period),
+                'experience_years': job.experience_years,
+                'applicant_count': job.applicant_count,
+                'created_at': humanize_time(job.created_at),
+                'thumbnail': thumbnail.image_url if thumbnail else None,
+                'posted_by': {
+                    'id': job.posted_by.id,
+                    'user_id': job.posted_by.id,
+                    'first_name': job.posted_by.first_name,
+                    'last_name': job.posted_by.last_name,
+                    'profile_photo': job.posted_by.profile_photo,
+                }
+            })
+
+        return Response({
+            'jobs': jobs_data,
+            'count': len(jobs_data),
+            'filters_applied': {
+                'query': query,
+                'state': state,
+                'city': city,
+                'job_type': job_type,
+                'category': category,
+                'min_salary': min_salary,
+                'max_salary': max_salary,
+                'experience_years': experience_years,
+                'sort_by': sort_by,
+            }
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response(
+            {'error': str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+

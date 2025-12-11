@@ -4,7 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db import transaction
 from accounts.models import User, IdentityVerification, Property, PropertyImage, PropertyInquiry
-
+from django.db.models import Q
 from s3_upload.utils import upload_file_to_s3
 from django.conf import settings
 from datetime import datetime, timezone
@@ -770,5 +770,131 @@ def update_inquiry_status(request, inquiry_id):
     except Exception as e:
         return Response(
             {"error": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['GET'])
+def search_properties(request):
+    """
+    Search and filter properties
+    Query params: query, state, city, property_type, listing_type, min_price, max_price, bedrooms, bathrooms, sort_by
+    """
+    try:
+        # Start with all approved and active properties
+        properties = Property.objects.filter(
+            status='approved',
+            is_active=True
+        ).select_related('posted_by').prefetch_related('images')
+
+        # Search by query (property title or description)
+        query = request.GET.get('query', '').strip()
+        if query:
+            properties = properties.filter(
+                Q(property_title__icontains=query) |
+                Q(property_description__icontains=query)
+            )
+
+        # Filter by state
+        state = request.GET.get('state', '').strip()
+        if state:
+            properties = properties.filter(state__iexact=state)
+
+        # Filter by city
+        city = request.GET.get('city', '').strip()
+        if city:
+            properties = properties.filter(city__iexact=city)
+
+        # Filter by property type
+        property_type = request.GET.get('property_type', '').strip()
+        if property_type:
+            properties = properties.filter(property_type=property_type)
+
+        # Filter by listing type
+        listing_type = request.GET.get('listing_type', '').strip()
+        if listing_type:
+            properties = properties.filter(listing_type=listing_type)
+
+        # Filter by price range
+        min_price = request.GET.get('min_price', '').strip()
+        if min_price:
+            properties = properties.filter(price__gte=float(min_price))
+
+        max_price = request.GET.get('max_price', '').strip()
+        if max_price:
+            properties = properties.filter(price__lte=float(max_price))
+
+        # Filter by bedrooms (minimum)
+        bedrooms = request.GET.get('bedrooms', '').strip()
+        if bedrooms:
+            properties = properties.filter(bedrooms__gte=int(bedrooms))
+
+        # Filter by bathrooms (minimum)
+        bathrooms = request.GET.get('bathrooms', '').strip()
+        if bathrooms:
+            properties = properties.filter(bathrooms__gte=int(bathrooms))
+
+        # Sorting
+        sort_by = request.GET.get('sort_by', 'newest').strip()
+        if sort_by == 'price_asc':
+            properties = properties.order_by('price')
+        elif sort_by == 'price_desc':
+            properties = properties.order_by('-price')
+        elif sort_by == 'popular':
+            properties = properties.order_by('-view_count', '-inquiry_count')
+        elif sort_by == 'oldest':
+            properties = properties.order_by('created_at')
+        else:  # newest (default)
+            properties = properties.order_by('-created_at')
+
+        # Prepare response
+        properties_data = []
+        for prop in properties:
+            thumbnail = prop.images.filter(is_thumbnail=True).first()
+            
+            properties_data.append({
+                'id': prop.id,
+                'property_title': prop.property_title,
+                'property_type': clean_label(prop.property_type),
+                'listing_type': clean_label(prop.listing_type),
+                'city': prop.city,
+                'state': prop.state,
+                'bedrooms': prop.bedrooms,
+                'bathrooms': prop.bathrooms,
+                'size_sqm': str(prop.size_sqm),
+                'price': str(prop.price),
+                'price_period': clean_label(prop.price_period),
+                'inquiry_count': prop.inquiry_count,
+                'view_count': prop.view_count,
+                'created_at': humanize_time(prop.created_at),
+                'thumbnail': thumbnail.image_url if thumbnail else None,
+                'posted_by': {
+                    'id': prop.posted_by.id,
+                    'user_id': prop.posted_by.id,
+                    'first_name': prop.posted_by.first_name,
+                    'last_name': prop.posted_by.last_name,
+                    'profile_photo': prop.posted_by.profile_photo,
+                }
+            })
+
+        return Response({
+            'properties': properties_data,
+            'count': len(properties_data),
+            'filters_applied': {
+                'query': query,
+                'state': state,
+                'city': city,
+                'property_type': property_type,
+                'listing_type': listing_type,
+                'min_price': min_price,
+                'max_price': max_price,
+                'bedrooms': bedrooms,
+                'bathrooms': bathrooms,
+                'sort_by': sort_by,
+            }
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response(
+            {'error': str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
