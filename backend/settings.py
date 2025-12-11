@@ -39,6 +39,8 @@ INSTALLED_APPS = [
     # Your apps
     'api',
     'accounts',
+    'jobs',
+    'properties',
     
 ]
 AUTH_USER_MODEL = 'accounts.User'
@@ -127,8 +129,8 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=7),   # token valid for 7 days
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),   # token valid for 7 days
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=40),
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
